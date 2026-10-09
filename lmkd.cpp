@@ -302,7 +302,6 @@ static struct event_handler_info vmpressure_hinfo[VMPRESS_LEVEL_COUNT];
  */
 #define MAX_EPOLL_EVENTS (1 + MAX_DATA_CONN + VMPRESS_LEVEL_COUNT + 1 + 1 + 1 + 1)
 static int epollfd;
-static int maxevents;
 
 /* OOM score values used by both kernel and framework */
 #define OOM_SCORE_ADJ_MIN       (-1000)
@@ -730,7 +729,6 @@ static void ctrl_data_close(int dsock_idx) {
         // Log a warning and keep going
         ALOGW("epoll_ctl for data connection socket failed; errno=%d", errno);
     }
-    maxevents--;
 
     close(data_sock[dsock_idx].sock);
     data_sock[dsock_idx].sock = -1;
@@ -1709,7 +1707,6 @@ static void ctrl_connect_handler(int data __unused, uint32_t events __unused,
         ctrl_data_close(free_dscock_idx);
         return;
     }
-    maxevents++;
 }
 
 /*
@@ -2346,7 +2343,6 @@ static void stop_wait_for_proc_kill(bool finished) {
             // Log an error and keep going
             ALOGE("epoll_ctl for last killed process failed; errno=%d", errno);
         }
-        maxevents--;
         close(last_kill_pid_or_fd);
     }
 
@@ -2397,7 +2393,6 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
         last_kill_pid_or_fd = -1;
         return;
     }
-    maxevents++;
 }
 
 /* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
@@ -3307,7 +3302,6 @@ static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
         destroy_psi_monitor(fd);
         return false;
     }
-    maxevents++;
     mpevfd[level] = fd;
 
     return true;
@@ -3324,7 +3318,6 @@ static void destroy_mp_psi(enum vmpressure_level level) {
         ALOGE("Failed to unregister psi monitor for %s memory pressure; errno=%d",
             level_name[level], errno);
     }
-    maxevents--;
     destroy_psi_monitor(fd);
     mpevfd[level] = -1;
 }
@@ -3400,6 +3393,7 @@ static bool init_memevent_listener_monitoring() {
                                                                   memevent_listener_notification};
 
     if (memevent_listener) return true;
+    if (!GET_LMK_PROPERTY(bool, "use_psi", true)) return false;
 
     // Make sure bpf programs are loaded, else we'll wait until they are loaded
     android::bpf::waitForProgsLoaded();
@@ -3444,7 +3438,6 @@ static bool init_memevent_listener_monitoring() {
     direct_reclaim_start_tm.tv_sec = 0;
     direct_reclaim_start_tm.tv_nsec = 0;
 
-    maxevents++;
     return true;
 }
 
@@ -3544,7 +3537,6 @@ static bool init_mp_common(enum vmpressure_level level) {
         ALOGE("epoll_ctl for level %s failed; errno=%d", levelstr, errno);
         goto err;
     }
-    maxevents++;
     mpevfd[level] = evfd;
     close(evctlfd);
     return true;
@@ -3571,7 +3563,6 @@ static void destroy_mp_common(enum vmpressure_level level) {
         // Log an error and keep going
         ALOGE("epoll_ctl for level %s failed; errno=%d", level_name[level], errno);
     }
-    maxevents--;
     close(fd);
     mpevfd[level] = -1;
 }
@@ -3667,7 +3658,6 @@ static bool init_reaper() {
         drop_reaper_comm();
         return false;
     }
-    maxevents++;
 
     return true;
 }
@@ -3717,7 +3707,6 @@ static int init(void) {
         ALOGE("epoll_ctl for lmkd control socket failed (errno=%d)", errno);
         return -1;
     }
-    maxevents++;
 
     has_inkernel_module = !access(INKERNEL_MINFREE_PATH, W_OK);
     use_inkernel_interface = has_inkernel_module;
@@ -3732,7 +3721,6 @@ static int init(void) {
                 close(kpoll_fd);
                 kpoll_fd = -1;
             } else {
-                maxevents++;
                 /* let the others know it does support reporting kills */
                 property_set("sys.lmk.reportkills", "1");
             }
@@ -3864,7 +3852,7 @@ static void mainloop(void) {
                     poll_params.polling_interval_ms - delay : poll_params.polling_interval_ms;
 
                 /* Wait for events until the next polling timeout */
-                nevents = epoll_wait(epollfd, events, maxevents, delay);
+                nevents = epoll_wait(epollfd, events, MAX_EPOLL_EVENTS, delay);
 
                 /* Update current time after wait */
                 clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
@@ -3879,7 +3867,7 @@ static void mainloop(void) {
                 clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
                 delay = kill_timeout_ms - get_time_diff_ms(&last_kill_tm, &curr_tm);
                 /* Wait for pidfds notification or kill timeout to expire */
-                nevents = (delay > 0) ? epoll_wait(epollfd, events, maxevents, delay) : 0;
+                nevents = (delay > 0) ? epoll_wait(epollfd, events, MAX_EPOLL_EVENTS, delay) : 0;
                 if (nevents == 0) {
                     /* Kill notification timed out */
                     stop_wait_for_proc_kill(false);
@@ -3891,7 +3879,7 @@ static void mainloop(void) {
                 }
             } else {
                 /* Wait for events with no timeout */
-                nevents = epoll_wait(epollfd, events, maxevents, -1);
+                nevents = epoll_wait(epollfd, events, MAX_EPOLL_EVENTS, -1);
             }
         }
 
